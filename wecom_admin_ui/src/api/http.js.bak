@@ -1,0 +1,6 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.http = void 0;
+var axios_1 = require("axios");
+exports.http = axios_1.default.create({ baseURL: import.meta.env.VITE_API_BASE || '/api/v1', timeout: 15000 });
+exports.http.interceptors.response.use(function (r) { return r; }, function (e) { var _a, _b, _c; return Promise.reject(new Error(((_c = (_b = (_a = e === null || e === void 0 ? void 0 : e.response) === null || _a === void 0 ? void 0 : _a.data) === null || _b === void 0 ? void 0 : _b.error) === null || _c === void 0 ? void 0 : _c.message) || e.message || 'Network Error')); });

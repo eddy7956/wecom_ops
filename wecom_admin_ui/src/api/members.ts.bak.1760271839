@@ -1,0 +1,70 @@
+// src/api/members.ts
+import { http } from '@/api/http'
+import { getPlanningMeta as getMembersMeta } from '@/api/planning'
+
+export type Page<T> = { items: T[]; total: number; page: number; size: number }
+
+export type ListParams = {
+  page?: number
+  size?: number
+  q?: string
+  tag_ids?: string[]
+  owner_userids?: string[]
+  has_unionid?: 0 | 1
+  created_from?: string
+  created_to?: string
+  touched_from?: string
+  touched_to?: string
+  external_userid?: string
+}
+
+const pickData = <T,>(x: any): T => (x && typeof x === 'object' && 'data' in x ? x.data : x)
+
+/** 会员列表：命中 /api/v1/ext/contacts，返回统一 Page 结构 */
+export async function listMembers(params: ListParams): Promise<Page<any>> {
+  const path = import.meta.env.VITE_MEMBERS_LIST || '/ext/contacts'
+  const r = await http.get(path, { params })
+  const data: any = pickData<any>(r.data)
+
+  // 兜底归一：{items,total,page,size}
+  if (Array.isArray(data?.items)) return data as Page<any>
+  if (Array.isArray(data?.list)) {
+    return {
+      items: data.list,
+      total: data.total ?? data.count ?? data.list.length,
+      page: params.page ?? 1,
+      size: params.size ?? data.list.length,
+    }
+  }
+  if (Array.isArray(data)) {
+    return { items: data, total: data.length, page: params.page ?? 1, size: params.size ?? data.length }
+  }
+  return { items: [], total: 0, page: params.page ?? 1, size: params.size ?? 20 }
+}
+
+/** 元数据（标签/跟进人）：复用规划页的实现 -> /ext/tags + /org/employees */
+export { getMembersMeta }
+
+/** 会员详情：用列表接口按 external_userid 精确查，取首条 */
+export async function getMember(external_userid: string): Promise<any | null> {
+  const path = import.meta.env.VITE_MEMBERS_LIST || '/ext/contacts'
+  const r = await http.get(path, {
+    params: { page: 1, size: 1, external_userid, q: external_userid },
+  })
+  const page = pickData<Page<any>>(r.data)
+  return page?.items?.[0] ?? null
+}
+/** 会员全景（vw_vip_panorama）：可按 external_userid / unionid / mobile 三选一查询 */
+export async function getVipPanorama(params: {
+  external_userid?: string
+  unionid?: string
+  mobile?: string
+}): Promise<any | null> {
+  const path = import.meta.env.VITE_VIP_PANORAMA || '/identity/bi-views'
+  const r = await http.get(path, { params })
+  const data = (r.data && typeof r.data === 'object' && 'data' in r.data) ? (r.data as any).data : r.data
+  // 兼容后端返回：单对象或数组第一条
+  if (!data) return null
+  if (Array.isArray(data)) return data[0] ?? null
+  return data
+}

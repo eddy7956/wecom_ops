@@ -1,0 +1,18 @@
+from flask import Flask
+
+def create_app():
+    app = Flask(__name__)
+
+    # 延迟导入，避免启动阶段因某模块未就绪而崩
+    from app.api.v1 import v1
+    app.register_blueprint(v1)
+
+    # 最小健康探针
+    @app.get("/healthz")
+    def healthz():
+        return {"ok": True, "data": "pong"}
+
+    return app
+
+# 可选：如果你依然用 app.app:app 启动，这行能兼容
+app = create_app()

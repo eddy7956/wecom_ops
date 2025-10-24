@@ -1,0 +1,110 @@
+from flask import Blueprint, request, jsonify, g
+from app.core.db import get_mysql_conn
+
+bp = Blueprint("mass_ext", __name__, url_prefix="/api/v1/mass")
+
+def _ok(payload, status=200):
+    resp = jsonify({"ok": True, "data": payload})
+    resp.status_code = status
+    resp.headers["X-Request-Id"] = getattr(g, "trace_id", "")
+    return resp
+
+def _err(code, msg, status=422, detail=None):
+    e = {"code": code, "message": msg}
+    if detail is not None: e["detail"] = detail
+    resp = jsonify({"ok": False, "error": e})
+    resp.status_code = status
+    resp.headers["X-Request-Id"] = getattr(g, "trace_id", "")
+    return resp
+
+# ---------- B6) 覆盖预估 ----------
+@bp.post("/targets/estimate")
+def estimate_targets():
+    """
+    Body: { "mode":"FILTER|UPLOAD|MIXED",
+            "filters": { "tag_ids":[...], "owner_userids":[...], "has_unionid":0|1 },
+            "upload_id": 123 }
+    返回：{ ok:true, data:{ total: N, by:{ ... } } }
+    """
+    try:
+        body = request.get_json(force=True) or {}
+        mode = (body.get("mode") or "FILTER").upper()
+        filters = body.get("filters") or {}
+        upload_id = body.get("upload_id")
+    except Exception as e:
+        return _err("VALIDATION_ERROR", "invalid json body", detail=str(e))
+
+    conn = get_mysql_conn()
+
+    def _list(v):
+        if not v: return []
+        if isinstance(v, str): return [x.strip() for x in v.split(",") if x.strip()]
+        return [str(x).strip() for x in v if str(x).strip()]
+
+    tag_ids = _list(filters.get("tag_ids"))
+    owners  = _list(filters.get("owner_userids"))
+    has_unionid = filters.get("has_unionid")
+
+    # 计算 FILTER 覆盖
+    by = {}
+    total_filter = 0
+    if mode in ("FILTER","MIXED"):
+        where, params = ["1=1"], []
+        join_tag, having = "", ""
+        if owners:
+            where.append(f"ec.follow_userid IN ({','.join(['%s']*len(owners))})")
+            params += owners
+        if has_unionid in (0,1,"0","1"):
+            where.append("(ec.unionid IS NOT NULL AND ec.unionid<>'')" if str(has_unionid)=="1"
+                         else "(ec.unionid IS NULL OR ec.unionid='')")
+        if tag_ids:
+            join_tag = "JOIN ext_contact_tag ect ON ect.external_userid=ec.external_userid"
+            where.append(f"ect.tag_id IN ({','.join(['%s']*len(tag_ids))})")
+            params += tag_ids
+            having = " HAVING COUNT(DISTINCT ect.tag_id) >= 1"
+
+        with conn.cursor() as cur:
+            cur.execute(f"""
+              SELECT COUNT(1) AS total FROM (
+                SELECT ec.external_userid
+                FROM ext_contact ec
+                {join_tag}
+                WHERE {' AND '.join(where)}
+                GROUP BY ec.external_userid
+                {having}
+              ) t
+            """, params)
+            total_filter = int(cur.fetchone()["total"])
+        by["filter"] = total_filter
+
+    # 计算 UPLOAD 覆盖（如有上传表）
+    total_upload = 0
+    if mode in ("UPLOAD","MIXED") and upload_id:
+        with conn.cursor() as cur:
+            # 如果你们的导入表叫别的名字，请按需替换 third_party_user_import
+            cur.execute("SELECT COUNT(1) AS c FROM third_party_user_import WHERE upload_id=%s", [upload_id])
+            row = cur.fetchone()
+            total_upload = int(row["c"]) if row else 0
+        by["upload"] = total_upload
+
+    # 简单合并：两者相加；若前端需要“严格去重”，可在后续补充去重逻辑（需要手机号->外部联系人映射表）
+    total = total_filter + total_upload
+    return _ok({"total": total, "by": by})
+
+# ---------- B5) 重试失败目标 ----------
+@bp.post("/tasks/<int:task_id>/retry_failed")
+def retry_failed(task_id: int):
+    """
+    把该任务下 state in (failed, recalled) 的目标重置为 pending，返回影响行数
+    """
+    conn = get_mysql_conn()
+    with conn.cursor() as cur:
+        # 兼容不同状态命名；如你的表只用 failed，可去掉 recalled
+        cur.execute("""
+          UPDATE mass_target_snapshot
+          SET state='pending', updated_at=NOW()
+          WHERE task_id=%s AND state IN ('failed','recalled')
+        """, [task_id])
+        # PyMySQL 默认 autocommit=True（在 db.py 中），否则需要 conn.commit()
+        affected = cur.rowcount or 0
+    return _ok({"task_id": task_id, "reset": affected})

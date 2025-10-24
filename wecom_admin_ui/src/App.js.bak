@@ -1,0 +1,25 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.default = App;
+var jsx_runtime_1 = require("react/jsx-runtime");
+var antd_1 = require("antd");
+var icons_1 = require("@ant-design/icons");
+var react_router_dom_1 = require("react-router-dom");
+var TasksList_1 = require("./pages/TasksList");
+var CreateTask_1 = require("./pages/CreateTask");
+var TaskDetail_1 = require("./pages/TaskDetail");
+var Health_1 = require("./pages/Health");
+var Header = antd_1.Layout.Header, Sider = antd_1.Layout.Sider, Content = antd_1.Layout.Content;
+function App() {
+    var pathname = (0, react_router_dom_1.useLocation)().pathname;
+    var selected = pathname.startsWith('/tasks/create') ? ['create']
+        : pathname.startsWith('/tasks/') ? ['detail']
+            : pathname.startsWith('/health') ? ['health']
+                : ['list'];
+    return ((0, jsx_runtime_1.jsxs)(antd_1.Layout, { style: { minHeight: '100vh' }, children: [(0, jsx_runtime_1.jsxs)(Sider, { theme: "light", width: 220, children: [(0, jsx_runtime_1.jsx)("div", { style: { padding: 12, fontWeight: 700 }, children: "WeCom Ops Admin" }), (0, jsx_runtime_1.jsx)(antd_1.Menu, { mode: "inline", selectedKeys: selected, items: [
+                            { key: 'list', icon: (0, jsx_runtime_1.jsx)(icons_1.AppstoreOutlined, {}), label: (0, jsx_runtime_1.jsx)(react_router_dom_1.Link, { to: "/tasks", children: "\u4EFB\u52A1\u5217\u8868" }) },
+                            { key: 'create', icon: (0, jsx_runtime_1.jsx)(icons_1.PlusCircleOutlined, {}), label: (0, jsx_runtime_1.jsx)(react_router_dom_1.Link, { to: "/tasks/create", children: "\u521B\u5EFA\u4EFB\u52A1" }) },
+                            { key: 'detail', icon: (0, jsx_runtime_1.jsx)(icons_1.FileSearchOutlined, {}), label: (0, jsx_runtime_1.jsx)(react_router_dom_1.Link, { to: "/tasks/1", children: "\u4EFB\u52A1\u8BE6\u60C5(\u793A\u4F8B)" }) },
+                            { key: 'health', icon: (0, jsx_runtime_1.jsx)(icons_1.SafetyCertificateOutlined, {}), label: (0, jsx_runtime_1.jsx)(react_router_dom_1.Link, { to: "/health", children: "\u5065\u5EB7\u68C0\u67E5" }) },
+                        ] })] }), (0, jsx_runtime_1.jsxs)(antd_1.Layout, { children: [(0, jsx_runtime_1.jsx)(Header, { style: { background: '#fff', padding: '0 16px', fontWeight: 600 }, children: "\u4F01\u4E1A\u5FAE\u4FE1\u7FA4\u53D1 \u00B7 \u7BA1\u7406\u540E\u53F0" }), (0, jsx_runtime_1.jsx)(Content, { style: { margin: 16, background: '#fff', padding: 16 }, children: (0, jsx_runtime_1.jsxs)(react_router_dom_1.Routes, { children: [(0, jsx_runtime_1.jsx)(react_router_dom_1.Route, { path: "/", element: (0, jsx_runtime_1.jsx)(TasksList_1.default, {}) }), (0, jsx_runtime_1.jsx)(react_router_dom_1.Route, { path: "/tasks", element: (0, jsx_runtime_1.jsx)(TasksList_1.default, {}) }), (0, jsx_runtime_1.jsx)(react_router_dom_1.Route, { path: "/tasks/create", element: (0, jsx_runtime_1.jsx)(CreateTask_1.default, {}) }), (0, jsx_runtime_1.jsx)(react_router_dom_1.Route, { path: "/tasks/:id", element: (0, jsx_runtime_1.jsx)(TaskDetail_1.default, {}) }), (0, jsx_runtime_1.jsx)(react_router_dom_1.Route, { path: "/health", element: (0, jsx_runtime_1.jsx)(Health_1.default, {}) }), " "] }) })] })] }));
+}

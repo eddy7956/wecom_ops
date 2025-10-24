@@ -1,0 +1,42 @@
+from flask import Blueprint, jsonify, g
+
+def _safe_import(mod_path, attr):
+    try:
+        mod = __import__(mod_path, fromlist=[attr])
+        return getattr(mod, attr)
+    except Exception:
+        return None
+
+org_bp   = _safe_import("app.org.routes",      "bp")
+ext_bp   = _safe_import("app.ext.routes",      "bp")
+id_bp    = _safe_import("app.identity.routes", "bp")
+mass_bp  = _safe_import("app.mass.routes",     "bp")
+mass_bp2 = _safe_import("app.mass.routes_ext", "bp")   # 扩展能力（estimate / retry_failed）
+
+health_bp = Blueprint("health_api", __name__, url_prefix="/api/v1")
+
+@health_bp.get("/health")
+def health():
+    resp = jsonify({"ok": True, "data": {"status": "OK"}})
+    resp.headers["X-Request-Id"] = getattr(g, "trace_id", "")
+    return resp, 200
+
+def register_v1_blueprints(app):
+    # 只对 /health 做前缀存在性判断；其它蓝图“能注册就注册”，允许相同前缀并存
+    def has_prefix(pfx: str) -> bool:
+        try:
+            return any(str(r.rule).startswith(pfx) for r in app.url_map.iter_rules())
+        except Exception:
+            return False
+
+    if not has_prefix("/api/v1/health"):
+        app.register_blueprint(health_bp)
+
+    for bp in (org_bp, ext_bp, id_bp, mass_bp, mass_bp2):
+        if not bp:
+            continue
+        try:
+            app.register_blueprint(bp)
+        except ValueError:
+            # 已注册（同名蓝图）时忽略
+            pass

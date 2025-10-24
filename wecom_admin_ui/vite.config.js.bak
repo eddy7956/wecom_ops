@@ -1,0 +1,20 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var vite_1 = require("vite");
+var plugin_react_1 = require("@vitejs/plugin-react");
+var node_url_1 = require("node:url");
+exports.default = (0, vite_1.defineConfig)(function (_a) {
+    var mode = _a.mode;
+    var env = (0, vite_1.loadEnv)(mode, process.cwd(), '');
+    // 开发可以通过 VITE_DEV_BASE=/admin-dev/ 启动，生产通过 BASE_URL=/admin/ 打包
+    var base = env.VITE_DEV_BASE || env.BASE_URL || '/';
+    return {
+        base: base,
+        plugins: [(0, plugin_react_1.default)()],
+        resolve: {
+            alias: {
+                '@': (0, node_url_1.fileURLToPath)(new node_url_1.URL('./src', import.meta.url)),
+            },
+        },
+    };
+});

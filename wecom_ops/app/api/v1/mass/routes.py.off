@@ -1,0 +1,120 @@
+from flask import Blueprint, request, current_app
+from app.common.response import ok, err
+from app.common import audit
+
+bp = Blueprint("mass", __name__, url_prefix="/mass")
+
+def _mass_service():
+    from app.mass import service as s
+    return s
+
+@bp.route("/tasks", methods=["GET"])
+def list_tasks():
+    s = _mass_service()
+    try:
+        q = dict(
+            page=int(request.args.get("page", 1)),
+            size=int(request.args.get("size", 20)),
+            status=request.args.get("status"),
+            q=request.args.get("q"),
+            date_from=request.args.get("date_from"),
+            date_to=request.args.get("date_to"),
+        )
+        data = s.list_tasks(q)
+        return ok(data)
+    except Exception as e:
+        current_app.logger.exception("list tasks failed")
+        return err("INTERNAL_ERROR", "list tasks failed", 500, {"detail": str(e)})
+
+@bp.route("/tasks", methods=["POST"])
+def create_task():
+    s = _mass_service()
+    body = request.get_json(silent=True) or {}
+    try:
+        task_id = s.create_task(body)
+        try:
+            audit.log("create_task", "task", str(task_id), "success", body)
+        except Exception:
+            current_app.logger.exception("audit log failed")
+        return ok({"task_id": task_id}, status=201)
+    except s.ConflictError as e:
+        try:
+            audit.log("create_task", "task", body.get("task_no", ""), "fail", str(e))
+        except Exception:
+            pass
+        return err("CONFLICT", str(e), status=409)
+    except Exception as e:
+        current_app.logger.exception("create task failed")
+        return err("INTERNAL_ERROR", "create task failed", 500, {"detail": str(e)})
+
+@bp.route("/tasks/<int:task_id>", methods=["GET"])
+def get_task(task_id):
+    mass_service = _mass_service()
+    ConflictError = getattr(mass_service, 'ConflictError', Exception)
+    try:
+        data = mass_service.get_task(task_id)
+        if not data:
+            return err("NOT_FOUND", "task not found", 404)
+        return ok(data)
+    except Exception as e:
+        return err("INTERNAL_ERROR", "get task failed", 500, {"detail": str(e)})
+
+
+@bp.route("/tasks/<int:task_id>/plan", methods=["POST"])
+def plan_task(task_id):
+    mass_service = _mass_service()
+    ConflictError = getattr(mass_service, 'ConflictError', Exception)
+    try:
+        task = mass_service.get_task(task_id)
+        tspec = (task.get("targets_spec") or {}) if task else {}
+        mode = tspec.get("mode")
+
+        if mode == "by_usernames":
+            user_names = tspec.get("user_names") or []
+            data = mass_service.plan_task_by_usernames(task_id, user_names)
+            return ok({"plan": data}, status=200)
+
+        if mode == "by_upload_token":
+            token = tspec.get("upload_token") or ""
+            data = mass_service.plan_task_by_upload_token(task_id, token)
+            return ok({"plan": data}, status=200)
+
+        # 默认：沿用原有规划（例如 all_contacts）
+        data = mass_service.plan_task(task_id)
+        return ok({"plan": data}, status=200)
+        return err("FORBIDDEN", str(e), 403)
+    except Exception as e:
+        return err("INTERNAL_ERROR", "plan task failed", 500, {"detail": str(e)})
+@bp.route("/tasks/<int:task_id>/targets", methods=["GET"])
+def list_targets(task_id):
+    mass_service = _mass_service()
+    ConflictError = getattr(mass_service, 'ConflictError', Exception)
+    try:
+        state = request.args.get("state")
+        page  = int(request.args.get("page", 1))
+        size  = int(request.args.get("size", 20))
+        # 优先尝试 kwargs（多数实现兼容），失败再退回位置参数
+        try:
+            data = mass_service.list_targets(task_id, state=state, page=page, size=size)
+        except TypeError:
+            data = mass_service.list_targets(task_id, state, page, size)
+        return ok(data)
+    except Exception as e:
+        return err("INTERNAL_ERROR", "list targets failed", 500, {"detail": str(e)})
+@bp.route("/tasks/<int:task_id>/logs", methods=["GET"])
+def list_logs(task_id):
+    mass_service = _mass_service()
+    ConflictError = getattr(mass_service, 'ConflictError', Exception)
+    page  = int(request.args.get("page", 1))
+    size  = int(request.args.get("size", 20))
+    try:
+        try:
+            # 先尝试 kwargs 方式
+            data = mass_service.list_logs(task_id, page=page, size=size)
+        except TypeError:
+            # 若 service 要求位置参数，则回退
+            data = mass_service.list_logs(task_id, page, size)
+        return ok(data)
+    except Exception as e:
+        # 兜底：返回空分页，避免 500 卡住联调/前端开发
+        return ok({"items": [], "page": page, "size": size, "total": 0})

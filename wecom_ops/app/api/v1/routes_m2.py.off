@@ -1,0 +1,33 @@
+from flask import Blueprint, jsonify, request
+from app.core.db import get_mysql_conn
+from app.core.redis import get_redis
+from app.wecom.signature import verify_callback_signature
+
+bp = Blueprint("v1_m2", __name__, url_prefix="/api/v1")
+
+@bp.get("/pingdb")
+def pingdb():
+    conn = get_mysql_conn()
+    with conn.cursor() as c:
+        c.execute("SELECT 1")
+        _ = c.fetchone()
+    return jsonify({"ok": True})
+
+@bp.get("/pingredis")
+def pingredis():
+    r = get_redis()
+    return jsonify({"ok": bool(r.ping())})
+
+@bp.get("/wecom/callback")
+def wecom_cb_verify():
+    ok, echostr = verify_callback_signature(request)
+    if ok and echostr:
+        return echostr, 200
+    return "invalid", 403
+
+@bp.post("/wecom/callback")
+def wecom_cb_event():
+    ok, _ = verify_callback_signature(request)
+    if not ok:
+        return jsonify({"ok": False, "error": "signature"}), 403
+    return jsonify({"ok": True})

@@ -1,0 +1,40 @@
+from flask import Blueprint, jsonify, g
+
+def _safe_import(mod_path, attr):
+    try:
+        mod = __import__(mod_path, fromlist=[attr])
+        return getattr(mod, attr)
+    except Exception:
+        return None
+
+# 模块蓝图（可能有的已经在其它入口注册过）
+org_bp  = _safe_import("app.org.routes",      "bp")
+ext_bp  = _safe_import("app.ext.routes",      "bp")
+id_bp   = _safe_import("app.identity.routes", "bp")
+mass_bp = _safe_import("app.mass.routes",     "bp")
+
+# /api/v1/health（统一契约）
+health_bp = Blueprint("health_api", __name__, url_prefix="/api/v1")
+@health_bp.get("/health")
+def health():
+    resp = jsonify({"ok": True, "data": {"status": "OK"}})
+    resp.headers["X-Request-Id"] = getattr(g, "trace_id", "")
+    return resp, 200
+
+def register_v1_blueprints(app):
+    """
+    只注册“尚未注册”的蓝图；避免重复导致 ValueError。
+    依据：Flask 把已注册蓝图放在 app.blueprints 映射里，key 是 blueprint.name。
+    """
+    # 1) 健康路由幂等
+    if "health_api" not in app.blueprints:
+        app.register_blueprint(health_bp)
+
+    # 2) 逐个模块蓝图，按“名字是否已存在”决定是否注册
+    for bp in (org_bp, ext_bp, id_bp, mass_bp):
+        if not bp:
+            continue
+        # 如果同名蓝图已经存在，就不重复注册
+        if bp.name in app.blueprints:
+            continue
+        app.register_blueprint(bp)

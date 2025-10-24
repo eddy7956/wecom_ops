@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "composite": true,
+
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",             // 解决 react-router / rollup 类型报错
+    "jsx": "react-jsx",
+    "types": ["vite/client", "node"],          // 解决 import.meta / process 类型
+
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"] },             // 对齐你代码里的 @ 别名
+
+    "esModuleInterop": true,                   // 解决 antd/rc 等默认导入类型报错
+    "allowSyntheticDefaultImports": true,
+
+    "skipLibCheck": true,                      // 跳过三方类型检查，规避 antd/rc 边角问题
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "useDefineForClassFields": true,
+    "noEmit": true
+  },
+  "include": ["src", "vite.config.ts"],
+  "exclude": ["node_modules", "dist", "**/*.vue", "src/router.ts"]
+}

@@ -1,0 +1,18 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.default = HealthPage;
+var jsx_runtime_1 = require("react/jsx-runtime");
+var react_query_1 = require("@tanstack/react-query");
+var antd_1 = require("antd");
+var health_1 = require("@/api/health");
+function HealthPage() {
+    var _a, _b, _c, _d;
+    var q = (0, react_query_1.useQuery)({ queryKey: ['health'], queryFn: health_1.getHealth, refetchInterval: 10000 });
+    if (q.isLoading)
+        return (0, jsx_runtime_1.jsx)(antd_1.Spin, { tip: "\u5065\u5EB7\u68C0\u67E5\uFF1A\u52A0\u8F7D\u4E2D..." });
+    if (q.isError) {
+        return (0, jsx_runtime_1.jsx)(antd_1.Alert, { type: "error", message: "\u5065\u5EB7\u68C0\u67E5\u5931\u8D25", description: ((_a = q.error) === null || _a === void 0 ? void 0 : _a.message) || '未知错误', action: (0, jsx_runtime_1.jsx)(antd_1.Button, { onClick: function () { return q.refetch(); }, children: "\u91CD\u8BD5" }) });
+    }
+    var d = (_b = q.data) !== null && _b !== void 0 ? _b : {};
+    return ((0, jsx_runtime_1.jsxs)(antd_1.Card, { title: "\u540E\u7AEF\u5065\u5EB7", children: [(0, jsx_runtime_1.jsxs)(antd_1.Descriptions, { column: 1, size: "small", children: [(0, jsx_runtime_1.jsx)(antd_1.Descriptions.Item, { label: "\u72B6\u6001", children: (_c = d.status) !== null && _c !== void 0 ? _c : (d.ok ? 'OK' : 'UNKNOWN') }), (0, jsx_runtime_1.jsx)(antd_1.Descriptions.Item, { label: "TraceID", children: (_d = d.trace_id) !== null && _d !== void 0 ? _d : '-' }), d.version && (0, jsx_runtime_1.jsx)(antd_1.Descriptions.Item, { label: "\u7248\u672C", children: d.version }), d.now && (0, jsx_runtime_1.jsx)(antd_1.Descriptions.Item, { label: "\u65F6\u95F4", children: d.now })] }), (0, jsx_runtime_1.jsx)(antd_1.Button, { style: { marginTop: 12 }, onClick: function () { return q.refetch(); }, children: "\u7ACB\u5373\u5237\u65B0" })] }));
+}

@@ -1,0 +1,35 @@
+import { http } from '@/api/http'
+
+export type HealthResp = {
+  ok: boolean
+  status?: string
+  version?: string
+  now?: string
+  trace_id?: string
+  error?: string
+}
+
+// 优先读取环境变量（默认 /sys/health）。http 的 baseURL 已是 /api/v1
+const HEALTH_PATH = (import.meta as any)?.env?.VITE_HEALTH_PATH || '/sys/health'
+
+export async function getHealth(): Promise<HealthResp> {
+  try {
+    const res = await http.get(HEALTH_PATH)
+    const raw = res.data && res.data.data ? res.data.data : res.data
+    return {
+      ok: raw?.ok ?? true,
+      status: raw?.status ?? 'OK',
+      version: raw?.version,
+      now: raw?.now ?? new Date().toISOString(),
+      trace_id: raw?.trace_id,
+    }
+  } catch (e: any) {
+    // 兜底探针：任务列表只取一条
+    try {
+      await http.get('/mass/tasks', { params: { page: 1, size: 1 } })
+      return { ok: true, status: 'OK', now: new Date().toISOString() }
+    } catch (e2: any) {
+      return { ok: false, status: 'DOWN', now: new Date().toISOString(), error: e2?.message || 'unreachable' }
+    }
+  }
+}

@@ -1,0 +1,62 @@
+from flask import Blueprint, request, jsonify, g
+from app.core.db import get_mysql_conn
+
+# 统一用一个蓝图名：org；URL 前缀保持一致
+bp = Blueprint("org", __name__, url_prefix="/api/v1/org")
+
+def _ok(payload, status=200):
+    resp = jsonify({"ok": True, "data": payload})
+    resp.status_code = status
+    resp.headers["X-Request-Id"] = getattr(g, "trace_id", "")
+    return resp
+
+def _err(code, msg, status=422):
+    resp = jsonify({"ok": False, "error": {"code": code, "message": msg}})
+    resp.status_code = status
+    resp.headers["X-Request-Id"] = getattr(g, "trace_id", "")
+    return resp
+
+@bp.get("/employees")
+def employees_v1():
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+        size = min(max(int(request.args.get("size", 50)), 1), 200)
+    except Exception:
+        return _err("VALIDATION_ERROR", "page/size must be numbers")
+
+    q = (request.args.get("q") or "").strip()
+    where, params = ["ec.follow_userid IS NOT NULL AND ec.follow_userid<>''"], []
+    if q:
+        where.append("ec.follow_userid LIKE %s")
+        params.append(f"%{q}%")
+
+    offset = (page - 1) * size
+    conn = get_mysql_conn()
+    with conn.cursor() as cur:
+        cur.execute(f"""
+          SELECT COUNT(1) AS total FROM (
+            SELECT ec.follow_userid
+            FROM ext_contact ec
+            WHERE {' AND '.join(where)}
+            GROUP BY ec.follow_userid
+          ) t
+        """, params)
+        total = int(cur.fetchone()["total"])
+
+        cur.execute(f"""
+          SELECT ec.follow_userid AS userid, COUNT(1) AS contact_count
+          FROM ext_contact ec
+          WHERE {' AND '.join(where)}
+          GROUP BY ec.follow_userid
+          ORDER BY contact_count DESC
+          LIMIT %s OFFSET %s
+        """, params + [size, offset])
+        rows = cur.fetchall()
+
+    items = [{
+        "userid": r["userid"],
+        "name": None,  # 后续如有 org 员工表再做映射
+        "contact_count": int(r["contact_count"])
+    } for r in rows]
+
+    return _ok({"items": items, "total": total, "page": page, "size": size})

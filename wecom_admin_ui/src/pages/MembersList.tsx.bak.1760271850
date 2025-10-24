@@ -1,0 +1,251 @@
+// src/pages/MembersList.tsx
+import React, { useMemo, useState } from 'react'
+import { Table, Form, Input, Select, Switch, DatePicker, Button, Space, Tag, Alert } from 'antd'
+import { useQuery } from '@tanstack/react-query'
+import dayjs from 'dayjs'
+
+// 统一走 members API（底层已映射到 /ext/contacts，并复用 /ext/tags + /org/employees 元数据）
+import { listMembers, getMembersMeta, type ListParams, type Page } from '@/api/members'
+
+const { RangePicker } = DatePicker
+
+type Member = {
+  external_userid?: string
+  name?: string
+  gender?: number
+  corp_name?: string
+  corp_full_name?: string
+  owner_userid?: string | string[]
+  tags?: Array<{ id?: string; name?: string }>
+  last_touch?: string
+  touch_count?: number
+  created_at?: string
+  [k: string]: any
+}
+
+export default function MembersList() {
+  // ------- 查询条件状态 -------
+  const [q, setQ] = useState<string>('')
+  const [tagIds, setTagIds] = useState<string[]>([])
+  const [owners, setOwners] = useState<string[]>([])
+  const [hasUnionid, setHasUnionid] = useState<boolean>(false)
+  const [createdRange, setCreatedRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null)
+  const [touchedRange, setTouchedRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null)
+  const [page, setPage] = useState<number>(1)
+  const [size, setSize] = useState<number>(20)
+
+  // ------- 元数据（标签、跟进人） -------
+  const qMeta = useQuery({
+    queryKey: ['members-meta'],
+    queryFn: () => getMembersMeta(), // 内部并发去 /ext/tags + /org/employees
+    staleTime: 5 * 60 * 1000,
+  })
+
+  // ------- 组装列表查询参数 -------
+  const params: ListParams = useMemo(() => {
+    return {
+      page,
+      size,
+      q: q || undefined,
+      tag_ids: tagIds.length ? tagIds : undefined,
+      owner_userids: owners.length ? owners : undefined,
+      has_unionid: hasUnionid ? 1 : undefined, // 0|1 类型，只有勾选时才传 1
+      created_from: createdRange?.[0]?.format('YYYY-MM-DD'),
+      created_to: createdRange?.[1]?.format('YYYY-MM-DD'),
+      touched_from: touchedRange?.[0]?.format('YYYY-MM-DD'),
+      touched_to: touchedRange?.[1]?.format('YYYY-MM-DD'),
+    }
+  }, [page, size, q, tagIds, owners, hasUnionid, createdRange, touchedRange])
+
+  // ------- 列表查询（React Query v5：用 placeholderData 代替 keepPreviousData） -------
+  const qList = useQuery<Page<Member>>({
+    queryKey: ['members', params],
+    queryFn: () => listMembers(params),
+    placeholderData: (prev) => prev,
+  })
+
+  // ------- 列定义 -------
+  const columns = [
+    {
+      title: '头像/外部联系人',
+      dataIndex: 'external_userid',
+      key: 'external_userid',
+      width: 260,
+      render: (_: any, r: Member) => (
+        <Space direction="vertical" size={2}>
+          <div style={{ fontWeight: 500 }}>{r.name || '-'}</div>
+          <div style={{ color: '#999' }}>{r.external_userid || '-'}</div>
+        </Space>
+      ),
+    },
+    {
+      title: '性别',
+      dataIndex: 'gender',
+      key: 'gender',
+      width: 80,
+      render: (v: number | undefined) => (v === 1 ? '男' : v === 2 ? '女' : '-'),
+    },
+    {
+      title: '企业',
+      dataIndex: 'corp_name',
+      key: 'corp_name',
+      width: 220,
+      render: (_: any, r: Member) => r.corp_full_name || r.corp_name || '-',
+    },
+    {
+      title: '跟进人',
+      dataIndex: 'owner_userid',
+      key: 'owner_userid',
+      width: 160,
+      render: (v: Member['owner_userid']) => (Array.isArray(v) ? v.join(',') : v || '-'),
+    },
+    {
+      title: '标签',
+      dataIndex: 'tags',
+      key: 'tags',
+      width: 260,
+      render: (tags: Member['tags']) =>
+        Array.isArray(tags) && tags.length
+          ? (
+            <Space wrap>
+              {tags.map((t, i) => (
+                <Tag key={(t.id || t.name || '') + i}>{t.name ?? t.id}</Tag>
+              ))}
+            </Space>
+            )
+          : '-',
+    },
+    {
+      title: '最近触达',
+      dataIndex: 'last_touch',
+      key: 'last_touch',
+      width: 160,
+      render: (v: string | undefined) => v || '-',
+    },
+    {
+      title: '累计触达',
+      dataIndex: 'touch_count',
+      key: 'touch_count',
+      width: 100,
+      render: (v: number | undefined) => (v ?? 0),
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 180,
+      render: (v: string | undefined) => v || '-',
+    },
+  ]
+
+  // ------- 事件 -------
+  const onReset = () => {
+    setQ('')
+    setTagIds([])
+    setOwners([])
+    setHasUnionid(false)
+    setCreatedRange(null)
+    setTouchedRange(null)
+    setPage(1)
+    setSize(20)
+  }
+
+  return (
+    <div style={{ padding: 16 }}>
+      <div style={{ background: '#fff', padding: 16, borderRadius: 8, marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 12 }}>筛选</div>
+
+        {qMeta.isError && (
+          <Alert
+            type="warning"
+            showIcon
+            message="加载筛选项失败"
+            description="标签/跟进人选项暂不可用，但列表查询不受影响。"
+            style={{ marginBottom: 12 }}
+          />
+        )}
+
+        <Form layout="inline" style={{ rowGap: 12 }}>
+          <Form.Item>
+            <Input
+              allowClear
+              placeholder="姓名/企业"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              style={{ width: 260 }}
+            />
+          </Form.Item>
+
+          <Form.Item>
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder="标签"
+              style={{ width: 260 }}
+              value={tagIds}
+              onChange={setTagIds}
+              options={(qMeta.data?.tags || []).map((t: any) => ({ value: t.id, label: t.name }))}
+              loading={qMeta.isFetching}
+            />
+          </Form.Item>
+
+          <Form.Item>
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder="跟进人"
+              style={{ width: 260 }}
+              value={owners}
+              onChange={setOwners}
+              options={(qMeta.data?.owners || []).map((u: any) => ({
+                value: u.userid,
+                label: u.name || u.userid,
+              }))}
+              loading={qMeta.isFetching}
+            />
+          </Form.Item>
+
+          <Form.Item label="有 unionid">
+            <Switch checked={hasUnionid} onChange={setHasUnionid} />
+          </Form.Item>
+
+          <Form.Item label="创建日期">
+            <RangePicker value={createdRange as any} onChange={(v) => setCreatedRange(v as any)} />
+          </Form.Item>
+
+          <Form.Item label="最近触达">
+            <RangePicker value={touchedRange as any} onChange={(v) => setTouchedRange(v as any)} />
+          </Form.Item>
+
+          <Form.Item>
+            <Space>
+              <Button type="primary" onClick={() => setPage(1)}>
+                查询
+              </Button>
+              <Button onClick={onReset}>清 空</Button>
+            </Space>
+          </Form.Item>
+        </Form>
+      </div>
+
+      <div style={{ background: '#fff', padding: 16, borderRadius: 8 }}>
+        <Table<Member>
+          rowKey={(r) => r.external_userid || r.name || String(Math.random())}
+          columns={columns as any}
+          dataSource={qList.data?.items || []}
+          loading={qList.isLoading}
+          pagination={{
+            current: page,
+            pageSize: size,
+            total: qList.data?.total || 0,
+            showSizeChanger: true,
+            onChange: (p, s) => {
+              setPage(p)
+              setSize(s || 20)
+            },
+          }}
+        />
+      </div>
+    </div>
+  )
+}
