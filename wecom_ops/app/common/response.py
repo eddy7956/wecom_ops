@@ -1,8 +1,11 @@
 # app/common/response.py
 from flask import jsonify, request
 
-def ok(data=None, status=200, headers=None):
+
+def ok(data=None, status=200, headers=None, extra=None):
     payload = {"ok": True, "data": data if data is not None else {}}
+    if extra:
+        payload.update(extra)
     resp = jsonify(payload); resp.status_code = status
     if headers:
         for k, v in headers.items(): resp.headers[k] = v

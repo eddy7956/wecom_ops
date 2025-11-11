@@ -1,4 +1,6 @@
 from flask import Flask, jsonify, g
+
+from app.common import response
 from werkzeug.exceptions import HTTPException
 
 
@@ -37,8 +39,7 @@ def create_app():
     @app.get("/healthz")
     def healthz():
         trace_id = getattr(g, "trace_id", "")
-        resp.headers["X-Request-Id"] = trace_id
-        return resp, 200
+        return response.ok(extra={"trace_id": trace_id})
 
     return app
 
