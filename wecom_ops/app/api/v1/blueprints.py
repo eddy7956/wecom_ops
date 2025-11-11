@@ -1,5 +1,7 @@
 import logging
-from flask import Blueprint, jsonify, g
+from flask import Blueprint, g
+
+from app.common import response
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +36,7 @@ health_bp = Blueprint("health_api", __name__, url_prefix="/api/v1")
 @health_bp.get("/health")
 def health():
     trace_id = getattr(g, "trace_id", "")
-    resp.headers["X-Request-Id"] = trace_id
-    return resp, 200
+    return response.ok(extra={"trace_id": trace_id})
 
 
 def register_v1_blueprints(app):
