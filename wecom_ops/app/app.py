@@ -37,8 +37,6 @@ def create_app():
     @app.get("/healthz")
     def healthz():
         trace_id = getattr(g, "trace_id", "")
-        payload = {"ok": True, "data": {"status": "OK"}, "trace_id": trace_id}
-        resp = jsonify(payload)
         resp.headers["X-Request-Id"] = trace_id
         return resp, 200
 

@@ -63,6 +63,8 @@ def wecom_get(path: str, params: dict | None = None,
             return data
 
         if ec in (40014, 42001, 40001):
+            with _tok_lock:
+                _tok_cache.pop(use_key, None)
             if retry >= max_retry:
                 raise RuntimeError(f"token error: path={path} use_key={use_key} params={params} data={data}")
             with _tok_lock:
