@@ -67,6 +67,8 @@ def wecom_get(path: str, params: dict | None = None,
                 _tok_cache.pop(use_key, None)
             if retry >= max_retry:
                 raise RuntimeError(f"token error: path={path} use_key={use_key} params={params} data={data}")
+            with _tok_lock:
+                _tok_cache.pop(use_key, None)
             _sleep_backoff(retry); retry += 1; continue
 
         if allow_fallback and ec in (48009, 48001) and not switched \

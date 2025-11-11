@@ -34,7 +34,6 @@ health_bp = Blueprint("health_api", __name__, url_prefix="/api/v1")
 @health_bp.get("/health")
 def health():
     trace_id = getattr(g, "trace_id", "")
-    resp = jsonify({"ok": True, "data": {"status": "OK"}, "trace_id": trace_id})
     resp.headers["X-Request-Id"] = trace_id
     return resp, 200
 
