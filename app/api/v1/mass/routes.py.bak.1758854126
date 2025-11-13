@@ -1,0 +1,164 @@
+from flask import Blueprint, request
+from app.common.response import ok, err
+from app.common import audit
+
+bp = Blueprint("mass", __name__, url_prefix="/mass")
+
+@bp.route("/tasks", methods=["POST"])
+def create_task():
+    from app.mass import service as mass_service
+    body = request.get_json(silent=True) or {}
+    try:
+        task_id = mass_service.create_task(body)
+        audit.log("create_task","task",str(task_id),"success",body)
+        return ok({"task_id": task_id}, status=201)
+    except mass_service.ConflictError as e:
+        audit.log("create_task","task", body.get("task_no",""),"fail",str(e))
+        return err("CONFLICT", str(e), status=409)
+    except Exception as e:
+        return err("INTERNAL_ERROR","create task failed", status=500, extra={"detail": str(e)})
+
+@bp.route("/tasks", methods=["GET"])
+def list_tasks():
+    from app.mass import service as mass_service
+    try:
+        q = dict(
+            page=int(request.args.get("page",1)),
+            size=int(request.args.get("size",20)),
+            status=request.args.get("status"),
+            q=request.args.get("q"),
+            date_from=request.args.get("date_from"),
+            date_to=request.args.get("date_to"),
+        )
+        data = mass_service.list_tasks(q)
+        return ok(data)
+    except Exception as e:
+        return err("INTERNAL_ERROR","list tasks failed",500,{"detail":str(e)})
+
+@bp.route("/tasks/<int:task_id>", methods=["GET"])
+def get_task(task_id):
+    from app.mass import service as mass_service
+    try:
+        data = mass_service.get_task(task_id)
+        if not data: return err("NOT_FOUND","task not found",404)
+        return ok(data)
+    except Exception as e:
+        return err("INTERNAL_ERROR","get task failed",500,{"detail":str(e)})
+
+@bp.route("/tasks/<int:task_id>", methods=["PATCH"])
+def update_task(task_id):
+    from app.mass import service as mass_service
+    body = request.get_json(silent=True) or {}
+    try:
+        mass_service.update_task(task_id, body)   # 仅 draft/planned 可改
+        audit.log("update_task","task",str(task_id),"success",body)
+        return ok({})
+    except mass_service.ForbiddenError as e:
+        audit.log("update_task","task",str(task_id),"fail",str(e))
+        return err("FORBIDDEN", str(e), 403)
+    except Exception as e:
+        return err("INTERNAL_ERROR","update task failed",500,{"detail":str(e)})
+
+@bp.route("/tasks/<int:task_id>", methods=["DELETE"])
+def delete_task(task_id):
+    from app.mass import service as mass_service
+    try:
+        mass_service.delete_task(task_id)        # 仅 draft/planned 可删
+        audit.log("delete_task","task",str(task_id),"success",{})
+        return ok({})
+    except mass_service.ForbiddenError as e:
+        audit.log("delete_task","task",str(task_id),"fail",str(e))
+        return err("FORBIDDEN", str(e), 403)
+    except Exception as e:
+        return err("INTERNAL_ERROR","delete task failed",500,{"detail":str(e)})
+
+@bp.route("/tasks/<int:task_id>/plan", methods=["POST"])
+def plan_task(task_id):
+    from app.mass import service as mass_service
+    try:
+        plan = mass_service.plan_task(task_id)   # 落快照，置 planned
+        audit.log("plan_task","task",str(task_id),"success",plan)
+        return ok({"plan": plan})
+    except mass_service.ValidationError as e:
+        audit.log("plan_task","task",str(task_id),"fail",str(e))
+        return err("VALIDATION_ERROR", str(e), 400)
+    except Exception as e:
+        return err("INTERNAL_ERROR","plan task failed",500,{"detail":str(e)})
+
+@bp.route("/tasks/<int:task_id>/start", methods=["POST"])
+def start_task(task_id):
+    from app.mass import service as mass_service
+    try:
+        data = mass_service.start_task(task_id)
+        audit.log("start_task","task",str(task_id),"success",{})
+        return ok({"task_id": task_id, "status": data.get("status"), "started_at": data.get("started_at")})
+    except mass_service.ValidationError as e:
+        return err("VALIDATION_ERROR", str(e), 400)
+    except mass_service.ForbiddenError as e:
+        return err("FORBIDDEN", str(e), 403)
+    except Exception as e:
+        return err("INTERNAL_ERROR","start task failed",500,{"detail":str(e)})
+
+@bp.route("/tasks/<int:task_id>/pause", methods=["POST"])
+def pause_task(task_id):
+    from app.mass import service as mass_service
+    try:
+        mass_service.pause_task(task_id)
+        audit.log("pause_task","task",str(task_id),"success",{})
+        return ok({"task_id": task_id})
+    except Exception as e:
+        return err("INTERNAL_ERROR","pause task failed",500,{"detail":str(e)})
+
+@bp.route("/tasks/<int:task_id>/resume", methods=["POST"])
+def resume_task(task_id):
+    from app.mass import service as mass_service
+    try:
+        mass_service.resume_task(task_id)
+        audit.log("resume_task","task",str(task_id),"success",{})
+        return ok({"task_id": task_id})
+    except Exception as e:
+        return err("INTERNAL_ERROR","resume task failed",500,{"detail":str(e)})
+
+@bp.route("/tasks/<int:task_id>/recall", methods=["POST"])
+def recall_task(task_id):
+    from app.mass import service as mass_service
+    try:
+        n = mass_service.recall_task(task_id)
+        audit.log("recall_task","task",str(task_id),"success",{"affected":n})
+        return ok({"task_id": task_id, "affected": n})
+    except Exception as e:
+        return err("INTERNAL_ERROR","recall task failed",500,{"detail":str(e)})
+
+@bp.route("/tasks/<int:task_id>/stats", methods=["GET"])
+def stats_task(task_id):
+    from app.mass import service as mass_service
+    try:
+        data = mass_service.stats_task(task_id)
+        return ok(data)
+    except Exception as e:
+        return err("INTERNAL_ERROR","stats failed",500,{"detail":str(e)})
+
+@bp.route("/tasks/<int:task_id>/targets", methods=["GET"])
+def list_targets(task_id):
+    from app.mass import service as mass_service
+    try:
+        state = request.args.get("state")  # pending|failed|sent
+        page  = int(request.args.get("page",1))
+        size  = int(request.args.get("size",50))
+        data = mass_service.list_targets(task_id, state=state, page=page, size=size)
+        return ok(data)
+    except Exception as e:
+        return err("INTERNAL_ERROR","list targets failed",500,{"detail":str(e)})
+
+@bp.route("/tasks/<int:task_id>/logs", methods=["GET"])
+def list_logs(task_id):
+    from app.mass import service as mass_service
+    try:
+        level = request.args.get("level")
+        q     = request.args.get("q")
+        page  = int(request.args.get("page",1))
+        size  = int(request.args.get("size",50))
+        data = mass_service.list_logs(task_id, level=level, q=q, page=page, size=size)
+        return ok(data)
+    except Exception as e:
+        return err("INTERNAL_ERROR","list logs failed",500,{"detail":str(e)})

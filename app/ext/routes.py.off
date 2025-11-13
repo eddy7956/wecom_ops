@@ -1,0 +1,188 @@
+from flask import Blueprint, request, jsonify, g
+from app.core.db import get_mysql_conn
+from datetime import datetime
+
+bp = Blueprint("ext_api", __name__, url_prefix="/api/v1/ext")
+
+def _list_param(name: str):
+    vals = request.args.getlist(name)
+    if len(vals) == 1 and ',' in (vals[0] or ''):
+        vals = [v.strip() for v in vals[0].split(',') if v.strip()]
+    return [v for v in (v.strip() for v in vals) if v]
+
+def _parse_dt(s):
+    if not s: return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            pass
+    return None
+
+@bp.get("/contacts")
+def list_contacts():
+    # 参数
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+        size = min(max(int(request.args.get("size", 20)), 1), 200)
+    except Exception:
+        resp = jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": "page/size must be numbers"}})
+        resp.status_code = 422
+        resp.headers["X-Request-Id"] = getattr(g, "trace_id", "")
+        return resp
+
+    q = (request.args.get("q") or "").strip()
+    tag_ids = _list_param("tag_ids")
+    owners  = _list_param("owner_userids")
+    has_unionid = request.args.get("has_unionid")
+    created_from = _parse_dt(request.args.get("created_from"))
+    created_to   = _parse_dt(request.args.get("created_to"))
+    touched_from = _parse_dt(request.args.get("touched_from"))
+    touched_to   = _parse_dt(request.args.get("touched_to"))
+
+    # where 组装
+    where, params = ["1=1"], []
+    if q:
+        where.append("(ec.name LIKE %s OR ec.corp_name LIKE %s OR ec.corp_full_name LIKE %s)")
+        p = f"%{q}%"; params += [p, p, p]
+    if owners:
+        where.append(f"ec.follow_userid IN ({','.join(['%s']*len(owners))})")
+        params += owners
+    if has_unionid in ("0","1"):
+        where.append("((ec.unionid IS NOT NULL AND ec.unionid<>''))" if has_unionid == "1"
+                     else "(ec.unionid IS NULL OR ec.unionid='')")
+    if created_from:
+        where.append("ec.created_at >= %s"); params.append(created_from)
+    if created_to:
+        where.append("ec.created_at <= %s"); params.append(created_to)
+    if touched_from:
+        where.append("ec.updated_at >= %s"); params.append(touched_from)
+    if touched_to:
+        where.append("ec.updated_at <= %s"); params.append(touched_to)
+
+    join_tag, having = "", ""
+    if tag_ids:
+        join_tag = "JOIN ext_contact_tag ect ON ect.external_userid = ec.external_userid"
+        where.append(f"ect.tag_id IN ({','.join(['%s']*len(tag_ids))})")
+        params += tag_ids
+        # 先“任一命中”，如需“全包含”改为 =len(tag_ids)
+        having = " HAVING COUNT(DISTINCT ect.tag_id) >= 1"
+
+    offset = (page - 1) * size
+
+    conn = get_mysql_conn()
+    with conn.cursor() as cur:
+        # 统计 total
+        cur.execute(f"""
+          SELECT COUNT(1) AS total FROM (
+            SELECT ec.external_userid
+            FROM ext_contact ec
+            {join_tag}
+            WHERE {' AND '.join(where)}
+            GROUP BY ec.external_userid
+            {having}
+          ) t
+        """, params)
+        total = int(cur.fetchone()["total"])
+
+        # 查询数据
+        cur.execute(f"""
+          SELECT ec.external_userid, ec.name, ec.corp_name, ec.corp_full_name,
+                 ec.follow_userid AS owner_userid, ec.unionid, ec.avatar,
+                 DATE_FORMAT(ec.created_at, '%%Y-%%m-%%d %%H:%%i:%%s') AS created_at,
+                 DATE_FORMAT(ec.updated_at, '%%Y-%%m-%%d %%H:%%i:%%s') AS updated_at
+          FROM ext_contact ec
+          {join_tag}
+          WHERE {' AND '.join(where)}
+          GROUP BY ec.external_userid
+          {having}
+          ORDER BY ec.updated_at DESC
+          LIMIT %s OFFSET %s
+        """, params + [size, offset])
+        rows = cur.fetchall()
+
+        # 收集本页标签
+        tagmap = {}
+        if rows:
+            eids = [r["external_userid"] for r in rows]
+            cur.execute(f"""
+              SELECT external_userid, GROUP_CONCAT(tag_id ORDER BY tag_id) AS tag_list
+              FROM ext_contact_tag
+              WHERE external_userid IN ({','.join(['%s']*len(eids))})
+              GROUP BY external_userid
+            """, eids)
+            tagmap = {x["external_userid"]: (x["tag_list"] or "").split(",") for x in cur.fetchall()}
+
+    items = [{
+        "external_userid": r["external_userid"],
+        "name": r["name"],
+        "corp_name": r["corp_name"] or r["corp_full_name"],
+        "owner_userid": r["owner_userid"],
+        "unionid": r["unionid"] or "",
+        "avatar": r["avatar"] or "",
+        "tags": tagmap.get(r["external_userid"], []),  # 这里返回 tag_id 列表；A2 再给映射
+        "created_at": r["created_at"],
+        "updated_at": r["updated_at"],
+    } for r in rows]
+
+    resp = jsonify({"ok": True, "data": {"items": items, "total": total, "page": page, "size": size}})
+    resp.headers["X-Request-Id"] = getattr(g, "trace_id", "")
+    return resp, 200
+@bp.get("/tags")
+def list_tags():
+    from flask import request
+    from app.core.db import get_mysql_conn
+    from flask import g
+    import re
+
+    def _ok(payload, status=200):
+        from flask import jsonify
+        resp = jsonify({"ok": True, "data": payload})
+        resp.status_code = status
+        resp.headers["X-Request-Id"] = getattr(g, "trace_id", "")
+        return resp
+
+    def _err(code, msg, status=422):
+        from flask import jsonify
+        resp = jsonify({"ok": False, "error": {"code": code, "message": msg}})
+        resp.status_code = status
+        resp.headers["X-Request-Id"] = getattr(g, "trace_id", "")
+        return resp
+
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+        size = min(max(int(request.args.get("size", 50)), 1), 200)
+    except Exception:
+        return _err("VALIDATION_ERROR", "page/size must be numbers")
+
+    q = (request.args.get("q") or "").strip()
+    where, params = ["1=1"], []
+    if q:
+        where.append("ect.tag_id LIKE %s")
+        params.append(f"%{q}%")
+
+    offset = (page - 1) * size
+    conn = get_mysql_conn()
+    with conn.cursor() as cur:
+        cur.execute(f"""
+          SELECT COUNT(1) AS total FROM (
+            SELECT ect.tag_id
+            FROM ext_contact_tag ect
+            WHERE {' AND '.join(where)}
+            GROUP BY ect.tag_id
+          ) t
+        """, params)
+        total = int(cur.fetchone()["total"])
+
+        cur.execute(f"""
+          SELECT ect.tag_id, COUNT(1) AS cnt
+          FROM ext_contact_tag ect
+          WHERE {' AND '.join(where)}
+          GROUP BY ect.tag_id
+          ORDER BY cnt DESC
+          LIMIT %s OFFSET %s
+        """, params + [size, offset])
+        rows = cur.fetchall()
+
+    items = [{"tag_id": r["tag_id"], "count": int(r["cnt"])} for r in rows]
+    return _ok({"items": items, "total": total, "page": page, "size": size})

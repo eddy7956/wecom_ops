@@ -1,0 +1,95 @@
+name: Rollback PROD (wecom_ops)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: '回滚目标（Tag 或 Commit SHA）。如：rel-20251112-1200 或 504f886'
+        required: false
+        default: ''
+
+# 每次回滚独立运行，避免被其他工作流取消
+concurrency:
+  group: rollback-prod-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  rollback-prod:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rollback on PROD via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key:      ${{ secrets.PROD_KEY }}
+          port:     ${{ secrets.PROD_PORT }}
+          command_timeout: 20m
+          script_stop: true
+          script: |
+            set -euxo pipefail
+            export LANG=C LC_ALL=C
+
+            APP_DIR="/www/wwwroot/wecom_ops"
+            SERVICE="wecom_ops"
+            BRANCH="main"
+            TARGET="${{ github.event.inputs.target }}"
+
+            [ -d "$APP_DIR" ] || { echo "ERROR: $APP_DIR 不存在"; exit 1; }
+            cd "$APP_DIR"
+
+            git config --global --add safe.directory "$APP_DIR"
+            mkdir -p ~/.ssh && ssh-keyscan -T 5 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+
+            # 保持使用 SSH 远端；若不存在则初始化
+            [ -d .git ] \
+              && git remote set-url origin git@github.com:eddy7956/wecom.git \
+              || { git init && git remote add origin git@github.com:eddy7956/wecom.git; }
+
+            # 拉全一点的历史以支持指定旧提交/Tag
+            git fetch --force --prune --tags origin "$BRANCH" --depth=200
+            git checkout -B "$BRANCH" || true
+
+            # 若未指定 target，则自动回滚到 main 的上一个提交
+            if [ -z "$TARGET" ]; then
+              # 确保 main 至少有 2 个提交
+              git fetch origin main --depth=50
+              TARGET="$(git rev-parse origin/main~1)"
+              echo "未提供 target，自动回滚到上一版：$TARGET"
+            fi
+
+            # 尝试解析 target；解析失败则列出可用标签并退出
+            if ! git rev-parse --verify --quiet "$TARGET" >/dev/null; then
+              # 若是 Tag 名称，取为 refs/tags/<tag>
+              if git show-ref --tags --verify --quiet "refs/tags/$TARGET"; then
+                TARGET="refs/tags/$TARGET"
+              else
+                echo "找不到目标：$TARGET"
+                echo "可用 Tags 列表："
+                git tag -l --sort=-creatordate | head -n 30 || true
+                exit 1
+              fi
+            fi
+
+            echo "开始回滚到：$TARGET"
+            git reset --hard "$TARGET"
+
+            # 依赖就地可用；如需变更版本会重装
+            command -v python3
+            [ -d .venv ] || python3 -m venv .venv
+            ./.venv/bin/pip install -U pip
+            [ -f requirements.txt ] && ./.venv/bin/pip install -r requirements.txt || true
+
+            # 滚动重启 + 健康检查（5001）
+            systemctl restart "$SERVICE"
+
+            for i in $(seq 1 30); do
+              curl -fsS http://127.0.0.1:5001/healthz >/dev/null 2>&1 && break || true
+              curl -fsS http://127.0.0.1:5001/api/v1/health >/dev/null 2>&1 && break || true
+              sleep 2
+            done
+
+            systemctl is-active --quiet "$SERVICE" || { echo "PROD 服务未就绪"; exit 1; }
+            ss -lntp | egrep '127\.0\.0\.1:(5001|5081)' || true
+
+            echo "回滚完成。"

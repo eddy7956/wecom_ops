@@ -1,0 +1,257 @@
+openapi: 3.0.3
+info:
+  title: WeCom Members API
+  version: 1.0.0
+servers:
+  - url: http://<host>:18081/api/v1
+paths:
+  /members/estimate:
+    get:
+      summary: 估算成员数量（用于分页/筛选前快照）
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+          description: 关键字（姓名/手机号/门店名/品牌模糊匹配）
+        - in: query
+          name: unassigned
+          schema: { type: integer, enum: [0,1] }
+          description: 仅统计待分配（无人跟进）
+        - in: query
+          name: has_unionid
+          schema: { type: integer, enum: [0,1] }
+        - in: query
+          name: brands
+          schema: { type: string }
+          description: 品牌过滤，多个以逗号分隔
+        - in: query
+          name: owners
+          schema: { type: string }
+          description: 跟进人 userid，多个以逗号分隔
+        - in: query
+          name: tags
+          schema: { type: string }
+          description: 标签名称，多个以逗号分隔（企业/规则组标签）
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                  error:
+                    $ref: '#/components/schemas/Error'
+  /members/list:
+    get:
+      summary: 成员列表（用于会员中心列表）
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, default: 1, minimum: 1 }
+        - in: query
+          name: size
+          schema: { type: integer, default: 20, minimum: 1, maximum: 200 }
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: unassigned
+          schema: { type: integer, enum: [0,1] }
+        - in: query
+          name: has_unionid
+          schema: { type: integer, enum: [0,1] }
+        - in: query
+          name: brands
+          schema: { type: string }
+        - in: query
+          name: owners
+          schema: { type: string }
+        - in: query
+          name: tags
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      page: { type: integer }
+                      size: { type: integer }
+                      total: { type: integer }
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            external_userid: { type: string }
+                            unionid:        { type: string, nullable: true }
+                            crm_user_id:    { type: string, nullable: true }
+                            vip_name:       { type: string, nullable: true }
+                            mobile:         { type: string, nullable: true, description: 原样返回DB手机号（不做规范化） }
+                            store_code:     { type: string, nullable: true }
+                            store_name:     { type: string, nullable: true }
+                            department_brand:{ type: string, nullable: true }
+                            primary_owner_userid: { type: string, nullable: true }
+                            primary_owner_name:   { type: string, nullable: true }
+                            tags:            { type: array, items: { type: string } }
+                            is_deleted:      { type: integer, enum: [0,1] }
+                            is_unassigned:   { type: integer, enum: [0,1] }
+                            updated_at:      { type: string, nullable: true }
+  /members/detail:
+    get:
+      summary: 成员详情（用于详情抽屉/侧边栏）
+      parameters:
+        - in: query
+          name: external_userid
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      external_userid: { type: string }
+                      unionid:         { type: string, nullable: true }
+                      crm_user_id:     { type: string, nullable: true }
+                      vip_name:        { type: string, nullable: true }
+                      mobile:          { type: string, nullable: true }
+                      store_code:      { type: string, nullable: true }
+                      store_name:      { type: string, nullable: true }
+                      department_brand:{ type: string, nullable: true }
+                      primary_owner_userid: { type: string, nullable: true }
+                      primary_owner_name:   { type: string, nullable: true }
+                      tags:         { type: array, items: { type: string } }
+                      ext_detail:   { type: object, nullable: true, description: 原始 detail_json 反序列化 }
+                      is_deleted:   { type: integer, enum: [0,1] }
+                      is_unassigned:{ type: integer, enum: [0,1] }
+  /members/meta:
+    get:
+      summary: 元数据（分页；支持 only=tags|owners|stores）
+      parameters:
+        - in: query
+          name: only
+          schema: { type: string, enum: [tags, owners, stores] }
+        - in: query
+          name: q
+          schema: { type: string, description: 模糊检索（名称/品牌/门店） }
+        - in: query
+          name: unassigned
+          schema: { type: integer, enum: [0,1], description: 仅统计待分配 }
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: size
+          schema: { type: integer, default: 20, maximum: 200 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      tags:
+                        type: object
+                        properties:
+                          page: { type: integer }
+                          size: { type: integer }
+                          total:{ type: integer }
+                          items:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                name: { type: string }
+                                group:{ type: string, nullable: true }
+                                members:{ type: integer }
+                      owners:
+                        type: object
+                        properties:
+                          page: { type: integer }
+                          size: { type: integer }
+                          total:{ type: integer }
+                          items:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                userid:  { type: string }
+                                name:    { type: string }
+                                members: { type: integer }
+                      stores:
+                        type: object
+                        properties:
+                          page: { type: integer }
+                          size: { type: integer }
+                          total:{ type: integer }
+                          items:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                store_code: { type: string }
+                                store_name: { type: string }
+                                department_brand: { type: string }
+                                members: { type: integer }
+  /wecom/callback:
+    post:
+      summary: 企业微信回调（联调时可加 X-Wecom-Debug: 1 跳过验签）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                Event: { type: string, enum: [add_external_contact, edit_external_contact, del_external_contact, change_external_tag, transfer_fail] }
+                ExternalUserID: { type: string }
+                FromUserName: { type: string, description: 跟进人 userid（add/del 事件） }
+                Detail: { type: object, description: 标签变化等附带信息 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+components:
+  schemas:
+    Ok:
+      type: object
+      properties:
+        ok: { type: boolean, example: true }
+        data: { type: object }
+    Error:
+      type: object
+      properties:
+        ok: { type: boolean, example: false }
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            detail: { type: string }

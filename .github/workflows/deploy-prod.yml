@@ -1,0 +1,88 @@
+name: Deploy PROD
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: prod-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy-prod:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout (server pulls code; checkout is fine)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Deploy to PROD via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST_PROD }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: 22
+          command_timeout: 30m
+          script_stop: true
+          script: |
+            set -euxo pipefail
+            export LANG=C LC_ALL=C
+
+            APP_DIR="/www/wwwroot/wecom_ops"
+            SERVICE="wecom_ops"
+            BRANCH="main"
+
+            [ -d "$APP_DIR" ] || { echo "ERROR: $APP_DIR 不存在"; exit 1; }
+            cd "$APP_DIR"
+
+            git config --global --add safe.directory "$APP_DIR"
+            mkdir -p ~/.ssh && ssh-keyscan -T 5 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+
+            if [ -d .git ]; then
+              git remote set-url origin git@github.com:eddy7956/wecom.git || true
+            else
+              git init
+              git remote add origin git@github.com:eddy7956/wecom.git || true
+            fi
+
+            git fetch origin "$BRANCH" --depth=1
+            git checkout -B "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+
+            command -v python3
+            [ -d .venv ] || python3 -m venv .venv
+            ./.venv/bin/pip install -U pip
+            [ -f requirements.txt ] && ./.venv/bin/pip install -r requirements.txt || true
+
+            # DB backup & migrate (tag=prod)
+            set -a; [ -f .env ] && . ./.env; set +a
+            mkdir -p /www/backup
+            mysqldump -h "${MYSQL_HOST}" -P "${MYSQL_PORT:-3306}" \
+              -u "${MYSQL_USER}" -p"${MYSQL_PASS}" --single-transaction \
+              --routines --triggers "${MYSQL_DB}" \
+              > "/www/backup/${MYSQL_DB}_prod_$(date +%F_%H%M%S).sql"
+
+            ./.venv/bin/python tools/dbmigrate.py validate --dir db/migrations
+            ./.venv/bin/python tools/dbmigrate.py up --dir db/migrations --tag prod
+
+            systemctl restart "$SERVICE"
+
+            # 内部健康检查
+            for i in $(seq 1 30); do
+              curl -fsS http://127.0.0.1:5001/healthz >/dev/null 2>&1 && break || true
+              curl -fsS http://127.0.0.1:5001/api/v1/health >/dev/null 2>&1 && break || true
+              sleep 2
+            done
+            systemctl is-active --quiet "$SERVICE" || { echo "PROD 服务未就绪"; exit 1; }
+            ss -lntp | egrep '127\.0\.0\.1:(5001|5081)' || true
+
+      - name: Public smoke
+        run: |
+          set -euxo pipefail
+          curl -fsS https://wework.yfsports.com.cn/api/v1/health
+          curl -fsS https://wework.yfsports.com.cn/healthz || true

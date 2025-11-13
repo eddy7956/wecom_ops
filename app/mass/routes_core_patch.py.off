@@ -1,0 +1,222 @@
+from flask import Blueprint, request, jsonify, g
+from app.core.db import get_mysql_conn
+import json, datetime
+from functools import wraps
+
+bp = Blueprint("mass_core_patch", __name__, url_prefix="/api/v1/mass")
+
+def _ok(payload, status=200):
+    from flask import make_response
+    resp = make_response(jsonify({"ok": True, "data": payload}), status)
+    resp.headers["X-Request-Id"] = getattr(g, "trace_id", "")
+    return resp
+
+def _err(code, msg, status=422, detail=None):
+    from flask import make_response
+    e = {"code": code, "message": msg}
+    if detail is not None:
+        e["detail"] = detail
+    resp = make_response(jsonify({"ok": False, "error": e}), status)
+    resp.headers["X-Request-Id"] = getattr(g, "trace_id", "")
+    return resp
+
+def _wrap(f):
+    @wraps(f)
+    def _inner(*a, **kw):
+        try:
+            return f(*a, **kw)
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print("[mass] ERROR:", e, "\n", tb, flush=True)
+            return _err("INTERNAL_ERROR", str(e), status=500, detail=tb)
+    return _inner
+
+def _json(obj): 
+    return json.dumps(obj or {}, ensure_ascii=False)
+
+# ---------- B1 创建任务 ----------
+@bp.post("/tasks")
+@_wrap
+def create_task():
+    body = request.get_json(force=True) or {}
+    if not body.get("name") or not body.get("content_type"):
+        return _err("VALIDATION_ERROR", "name/content_type required")
+
+    conn = get_mysql_conn()
+    with conn.cursor() as cur:
+        cur.execute("""
+          INSERT INTO mass_task
+            (task_no, name, content_type, content_json, targets_spec,
+             scheduled_at, qps_limit, concurrency_limit, batch_size, gray_strategy,
+             agent_id, status, created_at, updated_at)
+          VALUES
+            (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,NOW(),NOW())
+        """, [
+          body.get("task_no"), body["name"], body["content_type"],
+          _json(body.get("content_json")),
+          _json(body.get("targets_spec")),
+          body.get("scheduled_at"),
+          body.get("qps_limit"), body.get("concurrency_limit"),
+          body.get("batch_size"), _json(body.get("gray_strategy")),
+          body.get("agent_id"),
+        ])
+        task_id = int(cur.lastrowid)
+    conn.commit()
+    return _ok({"task_id": task_id}, status=201)
+
+# ---------- B2 规划（最小可用物化） ----------
+@bp.post("/tasks/<int:task_id>/plan")
+@_wrap
+def plan_task(task_id: int):
+    conn = get_mysql_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, targets_spec FROM mass_task WHERE id=%s LIMIT 1", [task_id])
+        row = cur.fetchone()
+        if not row:
+            return _err("NOT_FOUND", "task not found", 404)
+        try:
+            spec = row["targets_spec"]
+            if isinstance(spec, (bytes, bytearray, str)):
+                spec = json.loads(spec)
+        except Exception:
+            spec = {}
+        filters = (spec or {}).get("filters") or {}
+        owners   = filters.get("owner_userids") or []
+        tag_ids  = filters.get("tag_ids") or []
+        has_u    = filters.get("has_unionid")
+
+        where, params, join_tag = ["1=1"], [], ""
+        if owners:
+            where.append("ec.follow_userid IN (" + ",".join(["%s"]*len(owners)) + ")")
+            params += owners
+        if has_u in (0,1,"0","1"):
+            where.append("(ec.unionid IS NOT NULL AND ec.unionid<>'')" if str(has_u)=="1" else "(ec.unionid IS NULL OR ec.unionid='')")
+        if tag_ids:
+            join_tag = "JOIN ext_contact_tag ect ON ect.external_userid=ec.external_userid"
+            where.append("ect.tag_id IN (" + ",".join(["%s"]*len(tag_ids)) + ")")
+            params += tag_ids
+
+        cur.execute(f"""
+          SELECT ec.external_userid
+          FROM ext_contact ec
+          {join_tag}
+          WHERE {' AND '.join(where)}
+          GROUP BY ec.external_userid
+        """, params)
+        ids = [r["external_userid"] for r in cur.fetchall()]
+        total = len(ids)
+
+        # 清理旧的 pending，再批量写入 snapshot
+        if total:
+            cur.execute("DELETE FROM mass_target_snapshot WHERE task_id=%s AND state='pending'", [task_id])
+            now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            batch_size = 500
+            batch_no = 1
+            buf, vs = [], []
+            def flush():
+                if buf:
+                    cur.execute(f"""
+                      INSERT INTO mass_target_snapshot
+                        (task_id, recipient_id, state, wave_no, batch_no, created_at, updated_at)
+                      VALUES {','.join(buf)}
+                    """, vs)
+            for i, eid in enumerate(ids, 1):
+                buf.append("(%s,%s,%s,%s,%s,%s,%s)")
+                vs += [task_id, eid, 'pending', 1, batch_no, now, now]
+                if i % batch_size == 0:
+                    batch_no += 1
+                if len(buf) >= 1000:
+                    flush(); buf, vs = [], []
+            flush()
+            cur.execute("UPDATE mass_task SET status=1, updated_at=NOW() WHERE id=%s", [task_id])
+    conn.commit()
+    plan = {"total": total, "waves": {"1": {"batches": max(1, (total+499)//500), "size": min(500, total)}}}
+    return _ok({"plan": plan})
+
+# ---------- B4 目标分页 ----------
+@bp.get("/tasks/<int:task_id>/targets")
+@_wrap
+def list_targets(task_id: int):
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+        size = min(max(int(request.args.get("size", 20)), 1), 200)
+    except Exception:
+        return _err("VALIDATION_ERROR", "page/size must be numbers")
+
+    state = (request.args.get("state") or "").strip().lower()
+    state_map = {"init":"pending","ready":"pending","planned":"pending",
+                 "running":"running","done":"done","failed":"failed","recalled":"recalled"}
+    state_norm = state_map.get(state, state if state else None)
+
+    conn = get_mysql_conn()
+    where, params = ["task_id=%s"], [task_id]
+    if state_norm:
+        where.append("state=%s"); params.append(state_norm)
+
+    offset = (page-1)*size
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(1) AS total FROM mass_target_snapshot WHERE {' AND '.join(where)}", params)
+        total = int(cur.fetchone()["total"])
+        cur.execute(f"""
+          SELECT recipient_id, state, wave_no, batch_no, created_at, updated_at
+          FROM mass_target_snapshot
+          WHERE {' AND '.join(where)}
+          ORDER BY wave_no, batch_no, recipient_id
+          LIMIT %s OFFSET %s
+        """, params + [size, offset])
+        rows = cur.fetchall()
+
+    items = [{
+        "recipient_id": r["recipient_id"],
+        "state": r["state"],
+        "wave_no": int(r.get("wave_no") or 1),
+        "batch_no": int(r.get("batch_no") or 1),
+        "created_at": str(r.get("created_at") or ""),
+        "updated_at": str(r.get("updated_at") or "")
+    } for r in rows]
+    return _ok({"items": items, "total": total, "page": page, "size": size})
+
+# ---------- 列表（管理页 /api/v1/mass/tasks） ----------
+@bp.get("/tasks")
+@_wrap
+def list_tasks():
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+        size = min(max(int(request.args.get("size", 20)), 1), 200)
+    except Exception:
+        return _err("VALIDATION_ERROR", "page/size must be numbers")
+
+    offset = (page - 1) * size
+    conn = get_mysql_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(1) AS total FROM mass_task")
+        total = int(cur.fetchone()["total"])
+        cur.execute("""
+          SELECT id, task_no, name, content_type, status, agent_id,
+                 qps_limit, concurrency_limit, batch_size,
+                 scheduled_at, created_at, updated_at
+          FROM mass_task
+          ORDER BY id DESC
+          LIMIT %s OFFSET %s
+        """, [size, offset])
+        rows = cur.fetchall()
+
+    status_map = {0:"INIT",1:"PLANNED",2:"RUNNING",3:"DONE",4:"FAILED"}
+    items = []
+    for r in rows:
+        items.append({
+            "id": int(r["id"]),
+            "task_no": r.get("task_no"),
+            "name": r.get("name"),
+            "content_type": r.get("content_type"),
+            "status": status_map.get(int(r.get("status") or 0), "INIT"),
+            "agent_id": r.get("agent_id"),
+            "qps_limit": r.get("qps_limit"),
+            "concurrency_limit": r.get("concurrency_limit"),
+            "batch_size": r.get("batch_size"),
+            "scheduled_at": str(r.get("scheduled_at") or ""),
+            "created_at": str(r.get("created_at") or ""),
+            "updated_at": str(r.get("updated_at") or "")
+        })
+    return _ok({"items": items, "total": total, "page": page, "size": size})

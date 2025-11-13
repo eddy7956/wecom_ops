@@ -1,0 +1,13 @@
+name: Probe SSH from runner
+on: { workflow_dispatch: {} }
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe TEST
+        run: |
+          sudo apt-get update >/dev/null && sudo apt-get install -y netcat-openbsd >/dev/null
+          nc -vz -w5 ${{ secrets.TEST_HOST }} 22
+      - name: Probe PROD
+        run: |
+          nc -vz -w5 ${{ secrets.PROD_HOST }} 22
